@@ -1,0 +1,279 @@
+# dectailwindcss — Tailwind CSS rules for declint
+#
+# Class-usage hygiene in templates and markup. Works in the places
+# ESLint-based tooling cannot reach: plain HTML, Django/Jinja templates,
+# ERB, Vue, Svelte. Complements prettier-plugin-tailwindcss (which
+# sorts) and the Tailwind build (which knows the class universe).
+#
+# Install:
+#
+#   declint install gh:thyrgle/dectailwindcss          # into this project
+#   declint install -g gh:thyrgle/dectailwindcss       # user-global
+#
+# Then import it from your project config. NOTE: imported fragments
+# cannot declare `languages` — your top-level config owns that. Filter
+# to the template languages you actually use:
+#
+#   version: 1
+#   languages: [html, javascript, vue, svelte, erb]
+#   import:
+#     - global:thyrgle/dectailwindcss
+
+version: 1
+
+rules:
+  # The same class twice in one class attribute: a silent no-op that
+  # usually means an editing accident or a merge leftover.
+  - id: duplicate-class
+    parser: |
+      return function(text, offset)
+        local matches = {}
+        local pos = 1
+        while pos <= #text do
+          local open = text:find('class="', pos, true)
+          if not open then break end
+          local start_pos = open + 7
+          local close = text:find('"', start_pos, true)
+          if not close then break end
+          local value = text:sub(start_pos, close - 1)
+          local seen, dupes = {}, {}
+          for class in value:gmatch('%S+') do
+            if seen[class] then
+              dupes[class] = true
+            end
+            seen[class] = true
+          end
+          for class in pairs(dupes) do
+            matches[#matches + 1] = {
+              start = offset + start_pos - 1,
+              finish = offset + close - 1,
+              captures = { classes = class },
+            }
+          end
+          pos = close + 1
+        end
+        return matches
+      end
+    message: "duplicate class '{classes}' — the second one does nothing"
+    severity: error
+    tests:
+      - name: duplicate class is flagged
+        text: "<div class=\"btn btn primary\"></div>\n"
+        violations: 1
+        messages: ["duplicate class 'btn' — the second one does nothing"]
+      - name: distinct classes pass
+        text: "<div class=\"btn btn-primary\"></div>\n"
+        violations: 0
+
+  # Conflicting display utilities in one attribute, same breakpoint:
+  # `hidden flex` — the last one wins silently, a real editing bug.
+  # Variants (`md:flex`) are a different key: hiding on mobile and
+  # flexing on desktop is legitimate responsive design.
+  - id: contradicting-display
+    parser: |
+      return function(text, offset)
+        local display = {
+          hidden = true, block = true, ['inline-block'] = true,
+          inline = true, flex = true, ['inline-flex'] = true,
+          grid = true, ['inline-grid'] = true, table = true,
+        }
+        local matches = {}
+        local pos = 1
+        while pos <= #text do
+          local open = text:find('class="', pos, true)
+          if not open then break end
+          local start_pos = open + 7
+          local close = text:find('"', start_pos, true)
+          if not close then break end
+          local value = text:sub(start_pos, close - 1)
+          local per_variant = {}
+          for class in value:gmatch('%S+') do
+            local base = class:match('[^:]+$') or class
+            local variant = class:sub(1, #class - #base)
+            if display[base] then
+              local list = per_variant[variant] or {}
+              list[#list + 1] = base
+              per_variant[variant] = list
+            end
+          end
+          for variant, list in pairs(per_variant) do
+            if #list >= 2 then
+              matches[#matches + 1] = {
+                start = offset + start_pos - 1,
+                finish = offset + close - 1,
+                captures = { classes = table.concat(list, ', ') },
+              }
+            end
+          end
+          pos = close + 1
+        end
+        return matches
+      end
+    message: "conflicting display classes ({classes}) — only the last applies"
+    severity: error
+    tests:
+      - name: hidden flex is flagged
+        text: "<div class=\"hidden flex\"></div>\n"
+        violations: 1
+        messages: ["conflicting display classes (hidden, flex) — only the last applies"]
+      - name: md:hidden passes — responsive, not a conflict
+        text: "<div class=\"hidden md:flex\"></div>\n"
+        violations: 0
+
+  # Padding/margin axes: `p-2 p-4` — the second wins silently. Same
+  # variant + same spacing family + axis, two values, one attribute.
+  # Variants are a different key: `p-2 md:p-4` is responsive design.
+  - id: contradicting-spacing
+    parser: |
+      return function(text, offset)
+        local axes = { p = true, px = true, py = true, pt = true, pr = true, pb = true, pl = true, m = true, mx = true, my = true, mt = true, mr = true, mb = true, ml = true }
+        local matches = {}
+        local pos = 1
+        while pos <= #text do
+          local open = text:find('class="', pos, true)
+          if not open then break end
+          local start_pos = open + 7
+          local close = text:find('"', start_pos, true)
+          if not close then break end
+          local value = text:sub(start_pos, close - 1)
+          local counts = {}
+          for class in value:gmatch('%S+') do
+            local base = class:match('[^:]+$') or class
+            local variant = class:sub(1, #class - #base)
+            local family = base:match('^%-?(%a)')
+            local axis = base:match('^%-?%a([%a]*)%-') or ''
+            if family == 'p' or family == 'm' then
+              local key = variant .. family .. axis
+              counts[key] = (counts[key] or 0) + 1
+            end
+          end
+          for key, count in pairs(counts) do
+            if count >= 2 then
+              matches[#matches + 1] = {
+                start = offset + start_pos - 1,
+                finish = offset + close - 1,
+                captures = { axis = key },
+              }
+            end
+          end
+          pos = close + 1
+        end
+        return matches
+      end
+    message: "conflicting spacing utilities ({axis}) — only the last applies"
+    severity: warning
+    tests:
+      - name: p-2 p-4 is flagged
+        text: "<div class=\"p-2 p-4\"></div>\n"
+        violations: 1
+      - name: px and py are different axes
+        text: "<div class=\"px-2 py-4\"></div>\n"
+        violations: 0
+      - name: variants do not conflict
+        text: "<div class=\"p-2 md:p-4\"></div>\n"
+        violations: 0
+
+  - id: double-space-in-class
+    pattern: 'class="[^"]*  +[^"]*"'
+    message: "double space inside class — collapse it"
+    severity: hint
+    tests:
+      - name: double space is flagged
+        text: "<div class=\"btn  primary\"></div>\n"
+        violations: 1
+      - name: single spaces pass
+        text: "<div class=\"btn primary\"></div>\n"
+        violations: 0
+
+  - id: trailing-space-in-class
+    pattern: 'class="[^"]* "'
+    message: "trailing space inside class"
+    severity: hint
+    tests:
+      - name: trailing space is flagged
+        text: "<div class=\"btn \"></div>\n"
+        violations: 1
+      - name: no trailing space passes
+        text: "<div class=\"btn\"></div>\n"
+        violations: 0
+
+  # Gentle opinion: arbitrary values bypass the design system. Delete
+  # this rule if your project leans on them.
+  - id: arbitrary-value
+    pattern: '\[[a-z-]+:[^\]]+\]'
+    message: "arbitrary value — prefer a theme token"
+    severity: info
+    tests:
+      - name: arbitrary value is flagged
+        text: "<div class=\"[margin-top:8px]\"></div>\n"
+        violations: 1
+      - name: theme utility passes
+        text: "<div class=\"mt-2\"></div>\n"
+        violations: 0
+
+  - id: important-modifier
+    pattern: '(?m)(?:^|[\s"])![-\w]'
+    message: "important modifier — fix the specificity instead"
+    severity: info
+    tests:
+      - name: important prefix is flagged
+        text: "<div class=\"!text-red-500\"></div>\n"
+        violations: 1
+      - name: normal classes pass
+        text: "<div class=\"text-red-500\"></div>\n"
+        violations: 0
+
+  # Tailwind v4 removed the bare scales: `shadow` and `rounded` do not
+  # exist in v4, so these fire on real post-migration bugs. The -sm
+  # renames are semantically ambiguous (same name, new meaning) — left
+  # to the official upgrade codemod on purpose.
+  - id: v4-renamed-shadow
+    pattern: '(?m)(?:^|[\s"])shadow(?:[\s"]|$)'
+    message: "bare shadow does not exist in v4 — use shadow-sm"
+    severity: info
+    tests:
+      - name: bare shadow is flagged
+        text: "<div class=\"shadow\"></div>\n"
+        violations: 1
+      - name: v4 shadow-xs passes
+        text: "<div class=\"shadow-xs\"></div>\n"
+        violations: 0
+
+  - id: v4-renamed-rounded
+    pattern: '(?m)(?:^|[\s"])rounded(?:[\s"]|$)'
+    message: "bare rounded does not exist in v4 — use rounded-sm"
+    severity: info
+    tests:
+      - name: v3 rounded is flagged
+        text: "<div class=\"rounded\"></div>\n"
+        violations: 1
+      - name: v4 rounded-sm passes
+        text: "<div class=\"rounded-sm\"></div>\n"
+        violations: 0
+      - name: rounded-lg passes
+        text: "<div class=\"rounded-lg\"></div>\n"
+        violations: 0
+
+  - id: v4-renamed-ring
+    pattern: '(?m)(?:^|[\s"])ring(?:[\s"]|$)'
+    message: "v4 renamed ring: ring -> ring-3"
+    severity: info
+    tests:
+      - name: bare ring is flagged
+        text: "<div class=\"ring\"></div>\n"
+        violations: 1
+      - name: ring-2 passes
+        text: "<div class=\"ring-2\"></div>\n"
+        violations: 0
+
+  - id: outline-none-v4
+    pattern: '(?m)(?:^|[\s"])outline-none(?:[\s"]|$)'
+    message: "v4 renamed outline-none -> outline-hidden"
+    severity: info
+    tests:
+      - name: outline-none is flagged
+        text: "<button class=\"outline-none\"></button>\n"
+        violations: 1
+      - name: outline-hidden passes
+        text: "<button class=\"outline-hidden\"></button>\n"
+        violations: 0

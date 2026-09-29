@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Sample page</title>
+  </head>
+  <body>
+    <!-- every rule fires at least once below -->
+    <div class="card card shadow-sm rounded">card: duplicate + bare shadow/rounded</div>
+    <div class="hidden flex">display conflict</div>
+    <div class="p-2 p-4 md:p-6">spacing conflict (md variant is fine)</div>
+    <button class="outline-none !text-red-500  ">outline-none + important + trailing space</button>
+    <div class="[margin-top:8px]">arbitrary value</div>
+    <a class="link ring">bare ring</a>
+  </body>
+</html>
